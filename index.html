@@ -1,0 +1,608 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Financial Planner</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/babel-standalone@6.26.0/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const FinancialPlanner = () => {
+      const [income, setIncome] = useState(0);
+      const [fixedExpenses, setFixedExpenses] = useState([{ name: '', amount: 0 }]);
+      const [variableExpenses, setVariableExpenses] = useState([{ name: '', amount: 0 }]);
+      const [debts, setDebts] = useState([{ name: '', balance: '', interestRate: '', minPayment: '', extraPayment: '' }]);
+      const [savings, setSavings] = useState([{ name: '', amount: 0 }]);
+      const [purchases, setPurchases] = useState([{ name: '', amount: 0 }]);
+      const [showHelp, setShowHelp] = useState({ section: '', details: '' });
+      const [showTooltip, setShowTooltip] = useState({ section: '', x: 0, y: 0 });
+      const [currency, setCurrency] = useState('ZAR');
+
+      const currencies = {
+        ZAR: 'R',
+        USD: '$',
+        EUR: '€',
+        GBP: '£',
+        JPY: '¥'
+      };
+
+      useEffect(() => {
+        const savedData = localStorage.getItem('financialPlan');
+        if (savedData) {
+          const data = JSON.parse(savedData);
+          setIncome(data.income || 0);
+          setFixedExpenses(data.fixedExpenses || [{ name: '', amount: 0 }]);
+          setVariableExpenses(data.variableExpenses || [{ name: '', amount: 0 }]);
+          setDebts(data.debts || [{ name: '', balance: '', interestRate: '', minPayment: '', extraPayment: '' }]);
+          setSavings(data.savings || [{ name: '', amount: 0 }]);
+          setPurchases(data.purchases || [{ name: '', amount: 0 }]);
+          setCurrency(data.currency || 'ZAR');
+        }
+      }, []);
+
+      useEffect(() => {
+        const data = { income, fixedExpenses, variableExpenses, debts, savings, purchases, currency };
+        localStorage.setItem('financialPlan', JSON.stringify(data));
+      }, [income, fixedExpenses, variableExpenses, debts, savings, purchases, currency]);
+
+      const addField = (setState, defaultValue) => {
+        setState(prev => [...prev, defaultValue]);
+      };
+
+      const updateField = (index, field, value, setState) => {
+        setState(prev => {
+          const newState = [...prev];
+          newState[index] = { ...newState[index], [field]: value };
+          return newState;
+        });
+      };
+
+      const removeField = (index, setState) => {
+        setState(prev => prev.filter((_, i) => i !== index));
+      };
+
+      const calculateTotals = () => {
+        const fixedTotal = fixedExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
+        const variableTotal = variableExpenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
+        const debtPayments = debts.reduce((sum, debt) => sum + Number(debt.minPayment || 0) + Number(debt.extraPayment || 0), 0);
+        const savingsTotal = savings.reduce((sum, sav) => sum + Number(sav.amount || 0), 0);
+        const purchasesTotal = purchases.reduce((sum, pur) => sum + Number(pur.amount || 0), 0);
+        const totalExpenses = fixedTotal + variableTotal + debtPayments + savingsTotal + purchasesTotal;
+        const remaining = income - totalExpenses;
+        return { fixedTotal, variableTotal, debtPayments, savingsTotal, purchasesTotal, totalExpenses, remaining };
+      };
+
+      const projectDebtRepayment = () => {
+        let debtProjections = debts.map(debt => ({
+          ...debt,
+          months: [],
+          remainingBalance: Number(debt.balance) || 0
+        }));
+        let month = 0;
+        let allPaid = false;
+
+        while (!allPaid && month < 120) {
+          allPaid = true;
+          debtProjections = debtProjections.map(debt => {
+            if (!debt.balance || debt.remainingBalance <= 0) return debt;
+            const monthlyInterest = debt.remainingBalance * (Number(debt.interestRate || 0) / 100 / 12);
+            const totalPayment = Number(debt.minPayment || 0) + Number(debt.extraPayment || 0);
+            const principalPayment = totalPayment - monthlyInterest;
+            let newBalance = debt.remainingBalance - principalPayment;
+            if (newBalance < 0) newBalance = 0;
+            if (newBalance > 0) allPaid = false;
+            return {
+              ...debt,
+              months: [...debt.months, { month: month + 1, balance: newBalance, interest: monthlyInterest }],
+              remainingBalance: newBalance
+            };
+          });
+          month++;
+        }
+        return debtProjections;
+      };
+
+      const totals = calculateTotals();
+      const debtProjections = projectDebtRepayment();
+
+      const getHelpContent = (section) => {
+        switch (section) {
+          case 'income': return 'Enter your total monthly income from all sources (e.g., salary, side hustles). This is the starting point for your budget.';
+          case 'fixedExpenses': return 'Add regular costs that stay the same each month. Examples: rent, loan payments, utilities. Enter the name and amount for each.';
+          case 'variableExpenses': return 'List costs that vary month to month. Examples: groceries, dentist visits, car repairs. Add the name and estimated amount.';
+          case 'debts': return 'Track your debts here. You must input:\n- **Name**: e.g., "Bank Loan"\n- **Balance**: Current amount owed\n- **Interest Rate (%)**: Annual rate\n- **Min Payment**: Required monthly payment\n- **Extra Payment (Optional)**: Additional amount to pay off faster. The app auto-calculates the payoff projection.';
+          case 'savings': return 'Set aside money for savings or investments. Examples: emergency fund, retirement savings. Add the name and amount.';
+          case 'purchases': return 'Plan one-time purchases for the month. Examples: electronics, clothing. Enter the name and cost.';
+          default: return '';
+        }
+      };
+
+      const getTooltipContent = (section) => {
+        switch (section) {
+          case 'income': return 'Your total monthly income.';
+          case 'fixedExpenses': return 'Regular monthly costs.';
+          case 'variableExpenses': return 'Variable monthly costs.';
+          case 'debts': return 'Debts with details you input; projection is auto-calculated.';
+          case 'savings': return 'Savings or investments.';
+          case 'purchases': return 'One-time purchases.';
+          default: return '';
+        }
+      };
+
+      const getDebtColumnTooltip = (column) => {
+        switch (column) {
+          case 'name': return 'Name your debt (e.g., "Bank Loan").';
+          case 'balance': return 'Enter the current amount owed.';
+          case 'interestRate': return 'Input the annual interest rate.';
+          case 'minPayment': return 'Add the required monthly payment.';
+          case 'extraPayment': return 'Optional extra to pay off faster.';
+          default: return '';
+        }
+      };
+
+      const formatCurrency = (value) => {
+        return `${currencies[currency]}${Number(value || 0).toFixed(2)}`;
+      };
+
+      return (
+        <div className="container mx-auto p-2 bg-gray-100 min-h-screen">
+          <h1 className="text-3xl font-bold mb-4 text-center text-blue-600 sm:text-2xl">Financial Planner</h1>
+          <div className="mb-4 bg-white p-2 rounded-lg shadow sm:p-3">
+            <label className="block text-lg font-semibold mb-1 sm:text-base">Select Currency:</label>
+            <select
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              className="w-full p-1 border rounded sm:p-2"
+            >
+              {Object.keys(currencies).map((curr) => (
+                <option key={curr} value={curr}>{curr} ({currencies[curr]})</option>
+              ))}
+            </select>
+          </div>
+          <div className="mb-4 bg-white p-2 rounded-lg shadow sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 sm:text-lg">About This App</h2>
+            <p className="text-gray-700 text-sm sm:text-base">
+              This Financial Planner was created to empower you to take control of your finances with ease. It helps you track income, expenses, debts, savings, and one-time purchases in your preferred currency. The app aims to provide a clear overview of your financial health, offering projections to manage debts and plan for the future. Whether you're saving for a goal or paying off loans, it’s designed to simplify budgeting and encourage informed financial decisions.
+            </p>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              Monthly Income
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'income', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'income', details: getHelpContent('income') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'income' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('income')}
+              </div>
+            )}
+            {showHelp.section === 'income' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            <input
+              type="number"
+              value={income}
+              onChange={(e) => setIncome(Number(e.target.value))}
+              placeholder={`Enter monthly income (e.g., ${currencies[currency]}50,000)`}
+              className="w-full p-1 border rounded text-sm sm:p-2 sm:text-base"
+            />
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              Fixed Expenses
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'fixedExpenses', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'fixedExpenses', details: getHelpContent('fixedExpenses') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'fixedExpenses' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('fixedExpenses')}
+              </div>
+            )}
+            {showHelp.section === 'fixedExpenses' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            {fixedExpenses.map((exp, index) => (
+              <div key={index} className="flex mb-1 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={exp.name}
+                  onChange={(e) => updateField(index, 'name', e.target.value, setFixedExpenses)}
+                  placeholder="Expense name (e.g., Rent)"
+                  className="w-full p-1 border rounded mr-1 mb-1 text-sm sm:w-1/2 sm:p-2 sm:text-base sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={exp.amount}
+                  onChange={(e) => updateField(index, 'amount', Number(e.target.value), setFixedExpenses)}
+                  placeholder={`Amount (e.g., ${currencies[currency]}1,000)`}
+                  className="w-1/3 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/3 sm:mr-2"
+                />
+                <button
+                  onClick={() => removeField(index, setFixedExpenses)}
+                  className="bg-red-500 text-white px-1 py-1 rounded text-xs sm:px-2 sm:py-1 sm:text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => addField(setFixedExpenses, { name: '', amount: 0 })}
+              className="bg-blue-500 text-white px-2 py-1 rounded text-sm w-full sm:w-auto sm:px-4 sm:py-2"
+            >
+              Add Fixed Expense
+            </button>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              Variable Expenses
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'variableExpenses', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'variableExpenses', details: getHelpContent('variableExpenses') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'variableExpenses' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('variableExpenses')}
+              </div>
+            )}
+            {showHelp.section === 'variableExpenses' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            {variableExpenses.map((exp, index) => (
+              <div key={index} className="flex mb-1 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={exp.name}
+                  onChange={(e) => updateField(index, 'name', e.target.value, setVariableExpenses)}
+                  placeholder="Expense name (e.g., Groceries)"
+                  className="w-full p-1 border rounded mr-1 mb-1 text-sm sm:w-1/2 sm:p-2 sm:text-base sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={exp.amount}
+                  onChange={(e) => updateField(index, 'amount', Number(e.target.value), setVariableExpenses)}
+                  placeholder={`Amount (e.g., ${currencies[currency]}500)`}
+                  className="w-1/3 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/3 sm:mr-2"
+                />
+                <button
+                  onClick={() => removeField(index, setVariableExpenses)}
+                  className="bg-red-500 text-white px-1 py-1 rounded text-xs sm:px-2 sm:py-1 sm:text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => addField(setVariableExpenses, { name: '', amount: 0 })}
+              className="bg-blue-500 text-white px-2 py-1 rounded text-sm w-full sm:w-auto sm:px-4 sm:py-2"
+            >
+              Add Variable Expense
+            </button>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              Debts
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'debts', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'debts', details: getHelpContent('debts') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'debts' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('debts')}
+              </div>
+            )}
+            {showHelp.section === 'debts' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            {debts.map((debt, index) => (
+              <div key={index} className="flex mb-1 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={debt.name}
+                  onChange={(e) => updateField(index, 'name', e.target.value, setDebts)}
+                  placeholder="Debt name (e.g., Bank Loan)"
+                  className="w-full p-1 border rounded mr-1 mb-1 text-sm sm:w-1/4 sm:p-2 sm:text-base sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={debt.balance}
+                  onChange={(e) => updateField(index, 'balance', e.target.value, setDebts)}
+                  placeholder="Balance (e.g., amount owed)"
+                  className="w-1/5 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/5 sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={debt.interestRate}
+                  onChange={(e) => updateField(index, 'interestRate', e.target.value, setDebts)}
+                  placeholder="Interest Rate (%)"
+                  className="w-1/5 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/5 sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={debt.minPayment}
+                  onChange={(e) => updateField(index, 'minPayment', e.target.value, setDebts)}
+                  placeholder="Min Payment"
+                  className="w-1/5 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/5 sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={debt.extraPayment}
+                  onChange={(e) => updateField(index, 'extraPayment', e.target.value, setDebts)}
+                  placeholder="Extra Payment (Optional)"
+                  className="w-1/5 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/5 sm:mr-2"
+                />
+                <button
+                  onClick={() => removeField(index, setDebts)}
+                  className="bg-red-500 text-white px-1 py-1 rounded text-xs sm:px-2 sm:py-1 sm:text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => addField(setDebts, { name: '', balance: '', interestRate: '', minPayment: '', extraPayment: '' })}
+              className="bg-blue-500 text-white px-2 py-1 rounded text-sm w-full sm:w-auto sm:px-4 sm:py-2"
+            >
+              Add Debt
+            </button>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              Savings/Investments
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'savings', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'savings', details: getHelpContent('savings') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'savings' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('savings')}
+              </div>
+            )}
+            {showHelp.section === 'savings' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            {savings.map((sav, index) => (
+              <div key={index} className="flex mb-1 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={sav.name}
+                  onChange={(e) => updateField(index, 'name', e.target.value, setSavings)}
+                  placeholder="Savings name (e.g., Emergency Fund)"
+                  className="w-full p-1 border rounded mr-1 mb-1 text-sm sm:w-1/2 sm:p-2 sm:text-base sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={sav.amount}
+                  onChange={(e) => updateField(index, 'amount', Number(e.target.value), setSavings)}
+                  placeholder={`Amount (e.g., ${currencies[currency]}1,000)`}
+                  className="w-1/3 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/3 sm:mr-2"
+                />
+                <button
+                  onClick={() => removeField(index, setSavings)}
+                  className="bg-red-500 text-white px-1 py-1 rounded text-xs sm:px-2 sm:py-1 sm:text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => addField(setSavings, { name: '', amount: 0 })}
+              className="bg-blue-500 text-white px-2 py-1 rounded text-sm w-full sm:w-auto sm:px-4 sm:py-2"
+            >
+              Add Savings
+            </button>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow relative sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 flex items-center sm:text-lg">
+              One-Time Purchases
+              <span
+                className="ml-1 text-blue-500 cursor-help sm:ml-2"
+                onMouseEnter={(e) => setShowTooltip({ section: 'purchases', x: e.pageX, y: e.pageY })}
+                onMouseLeave={() => setShowTooltip({ section: '', x: 0, y: 0 })}
+                onClick={() => setShowHelp({ section: 'purchases', details: getHelpContent('purchases') })}
+              >
+                ?
+              </span>
+            </h2>
+            {showTooltip.section === 'purchases' && (
+              <div
+                className="absolute bg-gray-800 text-white p-1 rounded shadow-lg z-10 text-xs sm:text-sm"
+                style={{ top: showTooltip.y + 10, left: showTooltip.x + 10, maxWidth: '150px' }}
+              >
+                {getTooltipContent('purchases')}
+              </div>
+            )}
+            {showHelp.section === 'purchases' && (
+              <div className="bg-gray-200 p-2 rounded mt-1 text-xs sm:text-sm">
+                {showHelp.details} <button onClick={() => setShowHelp({ section: '', details: '' })} className="ml-1 text-red-500">Close</button>
+              </div>
+            )}
+            {purchases.map((pur, index) => (
+              <div key={index} className="flex mb-1 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={pur.name}
+                  onChange={(e) => updateField(index, 'name', e.target.value, setPurchases)}
+                  placeholder="Purchase name (e.g., Electronics)"
+                  className="w-full p-1 border rounded mr-1 mb-1 text-sm sm:w-1/2 sm:p-2 sm:text-base sm:mr-2"
+                />
+                <input
+                  type="number"
+                  value={pur.amount}
+                  onChange={(e) => updateField(index, 'amount', Number(e.target.value), setPurchases)}
+                  placeholder={`Amount (e.g., ${currencies[currency]}500)`}
+                  className="w-1/3 p-1 border rounded mr-1 mb-1 text-sm sm:p-2 sm:text-base sm:w-1/3 sm:mr-2"
+                />
+                <button
+                  onClick={() => removeField(index, setPurchases)}
+                  className="bg-red-500 text-white px-1 py-1 rounded text-xs sm:px-2 sm:py-1 sm:text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => addField(setPurchases, { name: '', amount: 0 })}
+              className="bg-blue-500 text-white px-2 py-1 rounded text-sm w-full sm:w-auto sm:px-4 sm:py-2"
+            >
+              Add Purchase
+            </button>
+          </div>
+
+          <div className="mb-4 bg-white p-2 rounded-lg shadow sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 sm:text-lg">Monthly Summary</h2>
+            <p>Income: {formatCurrency(income)}</p>
+            <p>Fixed Expenses: {formatCurrency(totals.fixedTotal)}</p>
+            <p>Variable Expenses: {formatCurrency(totals.variableTotal)}</p>
+            <p>Debt Payments: {formatCurrency(totals.debtPayments)}</p>
+            <p>Savings/Investments: {formatCurrency(totals.savingsTotal)}</p>
+            <p>One-Time Purchases: {formatCurrency(totals.purchasesTotal)}</p>
+            <p>Total Expenses: {formatCurrency(totals.totalExpenses)}</p>
+            <p className={totals.remaining < 0 ? 'text-red-500' : 'text-green-500'}>
+              Remaining Balance: {formatCurrency(totals.remaining)}
+            </p>
+          </div>
+
+          <div className="bg-white p-2 rounded-lg shadow sm:p-3">
+            <h2 className="text-xl font-semibold mb-1 sm:text-lg">Debt Repayment Projection</h2>
+            {debtProjections.map((debt, index) => (
+              <div key={index} className="mb-2">
+                <h3 className="font-semibold">{debt.name || `Debt ${index + 1}`}</h3>
+                <p>Initial Balance: {formatCurrency(Number(debt.balance || 0))}</p>
+                <p>Payoff Time: {(!debt.balance || debt.remainingBalance <= 0) ? 'Not paid off in 10 years' : debt.months.length} months</p>
+                {debt.months.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="table-auto w-full text-xs sm:text-sm">
+                      <thead>
+                        <tr>
+                          <th className="px-1 py-1 sm:px-2">Month</th>
+                          <th className="px-1 py-1 sm:px-2">Balance</th>
+                          <th className="px-1 py-1 sm:px-2">Interest Paid</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {debt.months.map((m, i) => (
+                          <tr key={i}>
+                            <td className="px-1 py-1 sm:px-2">{m.month}</td>
+                            <td className="px-1 py-1 sm:px-2">{formatCurrency(m.balance)}</td>
+                            <td className="px-1 py-1 sm:px-2">{formatCurrency(m.interest)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    ReactDOM.render(<FinancialPlanner />, document.getElementById('root'));
+  </script>
+</body>
+</html>
